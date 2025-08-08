@@ -1,0 +1,233 @@
+!pip install langchain-google-genai openpyxl -q
+
+# Importando bibliotecas e módulos necessários
+import pandas as pd # Importa a biblioteca pandas para manipulação de dados
+import google.generativeai as genai # Importa a biblioteca Google Generative AI
+from langchain_google_genai import ChatGoogleGenerativeAI # Importa a integração do Langchain para o Google Generative AI
+from langchain.prompts import PromptTemplate # Importa PromptTemplate para criar modelos de prompt
+from langchain_core.output_parsers import StrOutputParser # Importa StrOutputParser para converter a saída do modelo para string
+import os # Importa o módulo os para interações com o sistema operacional (não usado explicitamente, mas boa prática)
+import time # Importa o módulo time para adicionar atrasos
+import re # Importa o módulo re para expressões regulares
+from google.colab import userdata # Importa userdata para acessar segredos do Colab
+
+# Acessando a chave da API do Google nos segredos do Colab
+try: # Inicia um bloco try para tratar possíveis erros
+  GOOGLE_API_KEY = userdata.get('GOOGLE_API_KEY') # Obtém a chave da API dos segredos do Colab
+  genai.configure(api_key=GOOGLE_API_KEY) # Configura a biblioteca Google Generative AI com a chave da API
+  print("Chave da API do Google acessada e configurada.") # Imprime uma mensagem de sucesso
+except userdata.SecretNotFoundError: # Trata o caso em que o segredo não é encontrado
+  print("Chave da API do Google não encontrada nos segredos do Colab. Por favor, adicione-a.") # Imprime uma mensagem de erro
+  GOOGLE_API_KEY = None # Define a chave da API como None
+except Exception as e: # Trata quaisquer outras exceções
+  print(f"Erro ao configurar a chave da API do Google: {e}") # Imprime uma mensagem de erro geral
+  GOOGLE_API_KEY = None # Define a chave da API como None
+
+# Define o caminho para o arquivo Excel
+arquivo = "/content/Base_dados_ReclameAqui.xlsx" # Caminho para o arquivo Excel de dados de entrada
+
+# Lê o arquivo Excel em DataFrames do pandas
+df_treinamento = pd.read_excel(arquivo, sheet_name="Treinamento") # Lê a planilha "Treinamento" em df_treinamento
+df_teste = pd.read_excel(arquivo, sheet_name="Teste") # Lê a planilha "Teste" em df_teste
+
+# Função para gerar exemplos para o prompt
+def gerar_exemplos(df, num_examples=20): # Define uma função para gerar exemplos
+    exemplos = "" # Inicializa uma string vazia para armazenar os exemplos
+    for _, row in df.head(num_examples).iterrows(): # Itera sobre as primeiras num_examples linhas do DataFrame
+        exemplos += f"""
+Relato: {row['Relato']}
+Resposta da Cemig: {row['Resposta da Cemig']}
+Categorização: {row['Categorização']}
+Carência da resposta: {row['Carência da resposta']}
+
+""" # Formata e anexa o exemplo à string
+    return exemplos.strip() # Retorna os exemplos formatados, removendo espaços em branco no início/fim
+
+# Gera exemplos usando os dados de treinamento
+exemplos = gerar_exemplos(df_treinamento, num_examples=20) # Gera 20 exemplos do DataFrame de treinamento
+
+# Inicializa o modelo Gemini usando a integração do Langchain
+if GOOGLE_API_KEY: # Verifica se a chave da API está disponível
+  try: # Inicia um bloco try para tratar possíveis erros durante a inicialização do modelo
+    # Usando um modelo Gemini adequado, por exemplo, gemini-1.5-flash-latest ou gemini-1.5-pro-latest
+    # Verifique a disponibilidade e os recursos do modelo na documentação.
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", google_api_key=GOOGLE_API_KEY) # Inicializa o modelo ChatGoogleGenerativeAI
+    print("Modelo Gemini inicializado com sucesso com Langchain.") # Imprime uma mensagem de sucesso
+  except Exception as e: # Trata quaisquer exceções durante a inicialização do modelo
+    print(f"Erro ao inicializar o modelo Gemini com Langchain: {e}") # Imprime uma mensagem de erro
+    llm = None # Define llm como None se a inicialização falhar
+else: # Se a chave da API não estiver disponível
+    llm = None # Define llm como None
+    print("Modelo Gemini não inicializado devido à falta da chave da API.") # Imprime uma mensagem indicando a falta da chave da API
+
+# Define o modelo de prompt para o modelo de linguagem
+template = PromptTemplate( # Cria um objeto PromptTemplate
+    input_variables=["Relato", "Resposta da Cemig"], # Define as variáveis de entrada para o modelo
+    template=f"""
+Você é um assistente especializado em atendimento ao cliente da Cemig, com foco em empatia, clareza e resolução de problemas.
+
+Sua tarefa é analisar o "Relato" do cliente e a "Resposta da Cemig" original.
+
+Com base nesta análise, você deve:
+1.  **Categorizar a reclamação** usando uma única categoria principal (ex: Falta de energia, Corte de energia, Faturamento, Tarifa social, Iluminação pública, etc.). Escolha a categoria que melhor descreve o problema principal do cliente.
+2.  **Reescrever a "Resposta da Cemig"** de forma mais clara, acolhedora e compreensível para o consumidor comum. Mantenha as informações técnicas corretas, mas explique-as de forma simple e acessível.
+
+Use uma linguagem próxima, como se estivesse falando com alguém da sua família, mas mantendo o profissionalismo. Explique termos técnicos de forma simples, como se estivesse ensinando para alguém que não entende de energia elétrica.
+
+Considere os seguintes exemplos para entender o formato e a qualidade desejada para a categorização e a resposta reescrita. O campo "Carência da resposta" nos exemplos é apenas uma avaliação da resposta original e não deve ser incluído na sua saída.
+
+Exemplos:
+{exemplos}
+
+Now, analyze the following case:
+
+Relato: {{Relato}}
+Resposta da Cemig: {{Resposta da Cemig}}
+
+Retorne sua análise estritamente no seguinte formato, com as etiquetas exatas e quebras de linha indicadas:
+Categorização: [Sua categorização aqui]
+Resposta reescrita ao cliente:
+
+Olá [Nome do cliente constante na primeira linha do campo Resposta da Cemig],
+Tudo Bem com você? Esperamos que sim.
+
+[Sua reescrita da resposta da Cemig aqui, com base nos campos Relato e Resposta da Cemig.]
+
+Caso perceba qualquer outra inconsistência ou necessite de mais alguma informação, estamos à disposição para ajudar, por aqui ou nos canais de atendimento abaixo:
+
+Cemig Atende App
+Whatsapp: 313506116
+Agência virtual: www.cemigatende.com.br
+Canal de atendimento: ligue 116
+Central de atendimento para deficientes auditivos:08007238007
+
+A Cemig agradece a sua confiança!
+Equipe fale com a Cemig
+
+"""
+)
+
+# Cria uma cadeia de processamento usando Langchain
+if llm: # Verifica se o modelo de linguagem foi inicializado
+  chain = template | llm | StrOutputParser() # Cria uma cadeia: PromptTemplate -> Language Model -> String Output Parser
+else: # Se o modelo de linguagem não foi inicializado
+  chain = None # Define chain como None
+  print("Cadeia não criada porque o modelo não foi inicializado.") # Imprime uma mensagem
+
+# Função para extrair o nome do cliente da resposta
+def extrair_nome_cliente(resposta_cemig): # Define uma função para extrair o nome do cliente
+    linhas = resposta_cemig.strip().split('\n') # Divide a resposta em linhas
+    if not linhas: # Se não houver linhas
+        return "[Nome do cliente]" # Retorna um espaço reservado padrão
+
+    primeira_linha = linhas[0].strip() # Obtém a primeira linha e remove espaços em branco no início/fim
+    match_ola = re.search(r"Olá,?\s*([^,\n]+)", primeira_linha, re.IGNORECASE) # Procura pelo padrão "Olá, [Nome]"
+    if match_ola: # Se uma correspondência for encontrada
+        nome = match_ola.group(1).strip() # Extrai o nome
+        # Remove pontuação final e frases comuns
+        nome = re.sub(r'[.,!?;:]$', '', nome) # Remove pontuação final
+        nome = re.sub(r'Tudo Bem com você\? Esperamos que sim\.?$', '', nome).strip() # Remove a frase padrão
+        return nome if nome else "[Nome do cliente]" # Retorna o nome se não estiver vazio, caso contrário, retorna o espaço reservado
+
+    match_falo = re.search(r"Falo com\s*([^?\n]+)\?", primeira_linha, re.IGNORECASE) # Procura pelo padrão "Falo com [Nome]?"
+    if match_falo: # Se uma correspondência for encontrada
+        nome = match_falo.group(1).strip() # Extrai o nome
+        # Remove pontuação final e frases comuns
+        nome = re.sub(r'[.,!?;:]$', '', nome) # Remove pontuação final
+        nome = re.sub(r'Tudo bem espero que sim$', '', nome).strip() # Remove a frase padrão
+        return nome if nome else "[Nome do cliente]" # Retorna o nome se não estiver vazio, caso contrário, retorna o espaço reservado
+
+    return "[Nome do cliente]" # Retorna o espaço reservado se nenhum nome for encontrado
+
+# Processa cada linha no DataFrame de teste usando a cadeia do modelo de linguagem
+resultados = [] # Inicializa uma lista vazia para armazenar os resultados
+if chain: # Verifica se a cadeia foi criada
+    for index, row in df_teste.iterrows(): # Itera sobre cada linha no DataFrame de teste
+        entrada = { # Prepara a entrada para o modelo
+            "Relato": row["Relato"],
+            "Resposta da Cemig": row["Resposta da Cemig"],
+        }
+        try: # Inicia um bloco try para tratar possíveis erros durante a invocação do modelo
+            saida = chain.invoke(entrada) # Invoca a cadeia do modelo de linguagem com a entrada
+            resultados.append(saida) # Anexa a saída do modelo à lista de resultados
+        except Exception as e: # Trata quaisquer exceções durante a invocação do modelo
+            print(f"Erro ao processar linha {index}: {e}") # Imprime uma mensagem de erro com o índice da linha
+            resultados.append(f"Erro no processamento: {e}") # Anexa uma mensagem de erro à lista de resultados
+        time.sleep(1) # Adiciona um pequeno atraso para evitar possíveis limites de taxa com a API do Gemini também
+else: # Se a cadeia não foi criada
+    print("Pulando o processamento, pois a cadeia do modelo não foi criada.") # Imprime uma mensagem indicando que o processamento foi pulado
+
+# Processa os resultados para extrair a categorização e a resposta reescrita
+categorias = [] # Inicializa uma lista vazia para armazenar as categorias
+respostas = [] # Inicializa uma lista vazia para armazenar as respostas reescritas
+
+for i, r in enumerate(resultados): # Itera sobre os resultados
+    if r.startswith("Erro no processamento"): # Verifica se o resultado é uma mensagem de erro
+        categorias.append("Erro") # Anexa "Erro" à lista de categorias
+        respostas.append(r) # Anexa a mensagem de erro à lista de respostas
+        continue # Pula para a próxima iteração
+
+    linhas = r.split("\n") # Divide a string de resultado em linhas
+    categorizacao = "" # Inicializa uma string vazia para a categorização
+    resposta_reescrevendo = False # Sinalizador para indicar se está processando a resposta reescrita atualmente
+    resposta_reescrita_lines = [] # Inicializa uma lista vazia para armazenar as linhas da resposta reescrita
+
+    # Garante que o índice esteja dentro dos limites de df_teste
+    nome_cliente = "[Nome do cliente]" # Espaço reservado padrão para o nome do cliente
+    if i < len(df_teste): # Verifica se o índice atual está dentro dos limites do DataFrame de teste
+        nome_cliente = extrair_nome_cliente(df_teste.loc[i, "Resposta da Cemig"]) # Extrai o nome do cliente
+
+    # Adiciona o formato de saudação desejado uma vez no início
+    resposta_reescrita_lines.append(f"Olá {nome_cliente},") # Adiciona a linha "Olá [Nome],"
+    resposta_reescrita_lines.append("Tudo Bem com você? Esperamos que sim.") # Adiciona a linha "Tudo Bem..."
+    resposta_reescrita_lines.append("") # Adiciona uma linha vazia para formatação
+
+    # Define as linhas de saudação esperadas para excluir da saída do modelo
+    expected_greeting_lines = [ # Cria uma lista de linhas de saudação esperadas (em minúsculas e sem espaços)
+        f"Olá {nome_cliente},".strip().lower(),
+        "Tudo Bem com você? Esperamos que sim.".strip().lower(),
+        "" # Inclui linha vazia como uma possível duplicata
+    ]
+
+    for linha in linhas: # Itera sobre as linhas da saída do modelo
+        stripped_line = linha.strip() # Obtém a versão sem espaços da linha atual
+        if stripped_line.startswith("Categorização:"): # Verifica se a linha começa com "Categorização:"
+            parts = stripped_line.split(":", 1) # Divide a linha por ":"
+            if len(parts) > 1: # Se houver uma parte após ":"
+                categorizacao = parts[1].strip() # Extrai a categorização
+            resposta_reescrevendo = False # Define o sinalizador como False
+        elif stripped_line.startswith("Resposta reescrita ao cliente:"): # Verifica se a linha começa com "Resposta reescrita ao cliente:"
+            resposta_reescrevendo = True # Define o sinalizador como True para começar a coletar a resposta reescrita
+            # Não adiciona a saudação aqui, ela é adicionada antes do loop
+        elif resposta_reescrevendo: # Se estiver processando a resposta reescrita atualmente
+            # Anexa linhas da saída do modelo apenas se não fizerem parte da saudação esperada ou do espaço reservado
+            if stripped_line.lower() not in expected_greeting_lines and \
+               "[Sua reescrita da resposta da Cemig aqui, com base nos campos Relato e Resposta da Cemig.]" not in stripped_line:
+                resposta_reescrita_lines.append(linha) # Anexa a linha original para preservar a indentação, se necessário
+
+    categorias.append(categorizacao) # Anexa a categorização extraída à lista
+    # Junta as linhas, removendo espaços em branco no início/fim de cada linha e tratando linhas vazias consecutivas
+    cleaned_response_lines = [] # Inicializa uma lista para linhas de resposta limpas
+    last_line_empty = False # Sinalizador para rastrear se a última linha adicionada estava vazia
+    for line in resposta_reescrita_lines: # Itera sobre as linhas de resposta reescrita coletadas
+        stripped = line.strip() # Obtém a versão sem espaços da linha atual
+        if stripped: # Se a linha sem espaços não estiver vazia
+            cleaned_response_lines.append(stripped) # Anexa a linha sem espaços à lista limpa
+            last_line_empty = False # Redefine o sinalizador de linha vazia
+        elif not last_line_empty: # Se a linha sem espaços estiver vazia e a última linha não estava vazia
+            cleaned_response_lines.append("") # Anexa uma string vazia (representando uma única linha vazia)
+            last_line_empty = True # Define o sinalizador de linha vazia
+
+    # Remove uma linha vazia final, se existir
+    if cleaned_response_lines and cleaned_response_lines[-1] == "": # Verifica se a última linha está vazia
+        cleaned_response_lines.pop() # Remove a linha vazia final
+
+    respostas.append("\n".join(cleaned_response_lines)) # Junta as linhas limpas com quebras de linha e anexa à lista de respostas
+
+# Adiciona a categorização extraída e as respostas reescritas ao DataFrame de teste
+df_teste["Categorização"] = categorias # Adiciona a coluna 'Categorização' a df_teste
+df_teste["Resposta reescrita ao cliente"] = respostas # Adiciona a coluna 'Resposta reescrita ao cliente' a df_teste
+
+# Salva o DataFrame atualizado em um arquivo Excel
+df_teste.to_excel("/content/Saida_do_modelo.xlsx", index=False) # Salva o DataFrame em um arquivo Excel sem o índice
+print("✅ Arquivo salvo como Saida_do_modelo.xlsx") # Imprime uma mensagem de sucesso
